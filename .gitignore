@@ -1,0 +1,42 @@
+# Gradle and Kotlin
+.gradle/
+.kotlin/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration
+local.properties
+*.log
+
+# Signing keys and credentials
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# Environment files and secrets
+.env
+.env.*
+*.properties.local
+
+# Generated Android packages
+*.apk
+*.aab
+
+# macOS
+.DS_Store
+
+# Xcode user-specific files
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# CocoaPods generated dependencies
+Pods/
