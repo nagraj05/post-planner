@@ -96,6 +96,7 @@ import kotlin.math.roundToInt
 data class PhotoItem(
     val id: String,
     val bitmap: ImageBitmap,
+    val storagePath: String? = null,
 )
 
 data class PlannerProfile(
@@ -107,11 +108,12 @@ data class PlannerProfile(
     val bio: String = "",
     val website: String = "",
     val profilePicture: ImageBitmap? = null,
+    val profilePicturePath: String? = null,
     val followersCount: Long = 0,
     val followingCount: Long = 0,
 )
 
-private enum class AppThemeMode(val label: String) {
+enum class AppThemeMode(val label: String) {
     System("System default"),
     Light("Light"),
     Dark("Dark"),
@@ -121,6 +123,8 @@ private enum class AppThemeMode(val label: String) {
 fun App(
     profiles: List<PlannerProfile>,
     activeProfileId: String?,
+    themeMode: AppThemeMode,
+    onThemeSelected: (AppThemeMode) -> Unit,
     onAddProfile: (handle: String) -> Unit,
     onSelectProfile: (profileId: String) -> Unit,
     onAddPhotos: () -> Unit,
@@ -142,7 +146,6 @@ fun App(
     ) -> Unit,
     onPickProfilePicture: () -> Unit,
 ) {
-    var themeMode by remember { mutableStateOf(AppThemeMode.System) }
     val useDarkTheme = when (themeMode) {
         AppThemeMode.System -> isSystemInDarkTheme()
         AppThemeMode.Light -> false
@@ -279,7 +282,7 @@ fun App(
                     if (showSettingsPage) {
                         SettingsPage(
                             selectedTheme = themeMode,
-                            onThemeSelected = { themeMode = it },
+                            onThemeSelected = onThemeSelected,
                             onBack = { showSettingsPage = false },
                         )
                     } else if (showArchive) {

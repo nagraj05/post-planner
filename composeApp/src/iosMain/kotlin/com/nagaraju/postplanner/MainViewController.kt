@@ -6,6 +6,8 @@ fun MainViewController() = ComposeUIViewController {
     App(
         profiles = emptyList(),
         activeProfileId = null,
+        themeMode = AppThemeMode.System,
+        onThemeSelected = {},
         onAddProfile = {},
         onSelectProfile = {},
         onAddPhotos = {},

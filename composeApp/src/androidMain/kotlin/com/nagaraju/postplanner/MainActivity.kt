@@ -1,22 +1,22 @@
 package com.nagaraju.postplanner
 
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.util.Size
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 
 class MainActivity : ComponentActivity() {
     private val profiles = mutableStateListOf<PlannerProfile>()
     private val activeProfileId = mutableStateOf<String?>(null)
+    private val themeMode = mutableStateOf(AppThemeMode.System)
+    private lateinit var plannerStorage: PlannerStorage
+    private val persistenceHandler = Handler(Looper.getMainLooper())
+    private val persistenceRunnable = Runnable { persistStateNow() }
     private var pickerProfileId: String? = null
     private var replacementProfileId: String? = null
     private var replacementPhotoId: String? = null
@@ -29,10 +29,11 @@ class MainActivity : ComponentActivity() {
 
         if (profileId != null) {
             val newPhotos = selectedUris.mapNotNull { uri ->
-                loadPreview(uri)?.let { bitmap ->
+                plannerStorage.importImage(uri, "post")?.let { image ->
                     PhotoItem(
                         id = "${uri}#${System.nanoTime()}",
-                        bitmap = bitmap,
+                        bitmap = image.bitmap,
+                        storagePath = image.path,
                     )
                 }
             }
@@ -51,11 +52,15 @@ class MainActivity : ComponentActivity() {
         replacementPhotoId = null
 
         if (uri != null && profileId != null && photoId != null) {
-            loadPreview(uri)?.let { bitmap ->
+            plannerStorage.importImage(uri, "post")?.let { image ->
                 updateProfile(profileId) { profile ->
                     profile.copy(
                         photos = profile.photos.map { photo ->
-                            if (photo.id == photoId) photo.copy(bitmap = bitmap) else photo
+                            if (photo.id == photoId) {
+                                photo.copy(bitmap = image.bitmap, storagePath = image.path)
+                            } else {
+                                photo
+                            }
                         },
                     )
                 }
@@ -69,9 +74,12 @@ class MainActivity : ComponentActivity() {
         val profileId = profilePicturePickerProfileId
         profilePicturePickerProfileId = null
         if (uri != null && profileId != null) {
-            loadPreview(uri)?.let { bitmap ->
+            plannerStorage.importImage(uri, "profile")?.let { image ->
                 updateProfile(profileId) { profile ->
-                    profile.copy(profilePicture = bitmap)
+                    profile.copy(
+                        profilePicture = image.bitmap,
+                        profilePicturePath = image.path,
+                    )
                 }
             }
         }
@@ -79,10 +87,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        plannerStorage = PlannerStorage(applicationContext)
+        val storedState = plannerStorage.load()
+        profiles.addAll(storedState.profiles)
+        activeProfileId.value = storedState.activeProfileId
+        themeMode.value = storedState.themeMode
+
         setContent {
             App(
                 profiles = profiles,
                 activeProfileId = activeProfileId.value,
+                themeMode = themeMode.value,
+                onThemeSelected = { selectedTheme ->
+                    themeMode.value = selectedTheme
+                    persistState()
+                },
                 onAddProfile = { handle ->
                     val profileId = "${handle.lowercase()}#${System.nanoTime()}"
                     profiles.add(
@@ -93,9 +112,11 @@ class MainActivity : ComponentActivity() {
                         ),
                     )
                     activeProfileId.value = profileId
+                    persistState()
                 },
                 onSelectProfile = { profileId ->
                     activeProfileId.value = profileId
+                    persistState()
                 },
                 onAddPhotos = {
                     activeProfileId.value?.let { profileId ->
@@ -260,18 +281,32 @@ class MainActivity : ComponentActivity() {
         val index = profiles.indexOfFirst { it.id == profileId }
         if (index >= 0) {
             profiles[index] = transform(profiles[index])
+            persistState()
         }
     }
 
-    private fun loadPreview(uri: Uri): ImageBitmap? = runCatching {
-        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            contentResolver.loadThumbnail(uri, Size(1200, 1600), null)
-        } else {
-            contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            }
-        }
-        bitmap?.asImageBitmap()
-    }.getOrNull()
+    private fun persistState() {
+        persistenceHandler.removeCallbacks(persistenceRunnable)
+        persistenceHandler.postDelayed(persistenceRunnable, PERSISTENCE_DELAY_MILLIS)
+    }
+
+    private fun persistStateNow() {
+        if (!::plannerStorage.isInitialized) return
+        plannerStorage.save(
+            profiles = profiles.toList(),
+            activeProfileId = activeProfileId.value,
+            themeMode = themeMode.value,
+        )
+    }
+
+    override fun onStop() {
+        persistenceHandler.removeCallbacks(persistenceRunnable)
+        persistStateNow()
+        super.onStop()
+    }
+
+    private companion object {
+        const val PERSISTENCE_DELAY_MILLIS = 250L
+    }
 
 }
