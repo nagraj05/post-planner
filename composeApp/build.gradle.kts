@@ -57,6 +57,21 @@ android {
         versionName = "0.1.0"
     }
 
+    val ciKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+
+    if (!ciKeystorePath.isNullOrBlank()) {
+        val ciReleaseSigning = signingConfigs.create("ciRelease") {
+            storeFile = file(ciKeystorePath)
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        }
+
+        buildTypes.getByName("release") {
+            signingConfig = ciReleaseSigning
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
