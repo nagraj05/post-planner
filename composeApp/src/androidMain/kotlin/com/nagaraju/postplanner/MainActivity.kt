@@ -1,5 +1,8 @@
 package com.nagaraju.postplanner
 
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -23,7 +26,34 @@ class MainActivity : ComponentActivity() {
     private var profilePicturePickerProfileId: String? = null
     private val pickPhotos = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(50),
-    ) { selectedUris ->
+        ::addSelectedPhotos,
+    )
+    private val pickDevicePhotos = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+        ::addSelectedPhotos,
+    )
+    private val pickSamsungPhotos = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val resultIntent = result.data
+            val selectedUris = buildList {
+                resultIntent?.clipData?.let { clipData ->
+                    for (index in 0 until clipData.itemCount) {
+                        add(clipData.getItemAt(index).uri)
+                    }
+                }
+                resultIntent?.data?.let { uri ->
+                    if (uri !in this) add(uri)
+                }
+            }
+            addSelectedPhotos(selectedUris)
+        } else {
+            pickerProfileId = null
+        }
+    }
+
+    private fun addSelectedPhotos(selectedUris: List<Uri>) {
         val profileId = pickerProfileId ?: activeProfileId.value
         pickerProfileId = null
 
@@ -38,7 +68,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             updateProfile(profileId) { profile ->
-                profile.copy(photos = profile.photos + newPhotos)
+                profile.copy(photos = newPhotos + profile.photos)
             }
         }
     }
@@ -120,12 +150,18 @@ class MainActivity : ComponentActivity() {
                 },
                 onAddPhotos = {
                     activeProfileId.value?.let { profileId ->
+                        launchPhotoPicker(profileId)
+                    }
+                },
+                onAddPhotosFromSamsungGallery = {
+                    activeProfileId.value?.let { profileId ->
+                        launchSamsungGallery(profileId)
+                    }
+                },
+                onAddPhotosFromDevice = {
+                    activeProfileId.value?.let { profileId ->
                         pickerProfileId = profileId
-                        pickPhotos.launch(
-                            PickVisualMediaRequest(
-                                mediaType = ActivityResultContracts.PickVisualMedia.ImageOnly,
-                            ),
-                        )
+                        pickDevicePhotos.launch(arrayOf("image/*"))
                     }
                 },
                 onChangePhoto = { photoId ->
@@ -297,6 +333,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun launchPhotoPicker(profileId: String) {
+        pickerProfileId = profileId
+        pickPhotos.launch(
+            PickVisualMediaRequest(
+                mediaType = ActivityResultContracts.PickVisualMedia.ImageOnly,
+            ),
+        )
+    }
+
+    private fun launchSamsungGallery(profileId: String) {
+        pickerProfileId = profileId
+        val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            setPackage(SAMSUNG_GALLERY_PACKAGE)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            pickSamsungPhotos.launch(galleryIntent)
+        }.onFailure {
+            launchPhotoPicker(profileId)
+        }
+    }
+
     private fun persistState() {
         persistenceHandler.removeCallbacks(persistenceRunnable)
         persistenceHandler.postDelayed(persistenceRunnable, PERSISTENCE_DELAY_MILLIS)
@@ -319,6 +380,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val PERSISTENCE_DELAY_MILLIS = 250L
+        const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
     }
 
 }

@@ -32,12 +32,15 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -129,6 +132,8 @@ fun App(
     onAddProfile: (handle: String) -> Unit,
     onSelectProfile: (profileId: String) -> Unit,
     onAddPhotos: () -> Unit,
+    onAddPhotosFromSamsungGallery: (() -> Unit)?,
+    onAddPhotosFromDevice: () -> Unit,
     onChangePhoto: (photoId: String) -> Unit,
     onCopyPhotos: (Set<String>) -> Unit,
     onMovePhotos: (photoIds: Set<String>, targetProfileId: String) -> Unit,
@@ -159,6 +164,7 @@ fun App(
         val scope = rememberCoroutineScope()
         val selectedIds = remember { mutableStateListOf<String>() }
         var showAddProfileDialog by remember { mutableStateOf(false) }
+        var showPhotoSourceDialog by remember { mutableStateOf(false) }
         var showEditProfileDialog by remember { mutableStateOf(false) }
         var showSettingsPage by remember { mutableStateOf(false) }
         var showArchive by remember { mutableStateOf(false) }
@@ -176,6 +182,14 @@ fun App(
                 selectedIds.remove(photoId)
             } else {
                 selectedIds.add(photoId)
+            }
+        }
+
+        fun requestAddPhotos() {
+            if (activeProfile == null) {
+                showAddProfileDialog = true
+            } else {
+                showPhotoSourceDialog = true
             }
         }
 
@@ -227,13 +241,7 @@ fun App(
                     } else if (!showArchive && selectedIds.isEmpty()) {
                         AddPhotoBar(
                             archiveCount = activeProfile?.archivedPhotos?.size ?: 0,
-                            onAddPhotos = {
-                                if (activeProfile == null) {
-                                    showAddProfileDialog = true
-                                } else {
-                                    onAddPhotos()
-                                }
-                            },
+                            onAddPhotos = ::requestAddPhotos,
                             onOpenArchive = {
                                 if (activeProfile != null) {
                                     selectedIds.clear()
@@ -331,13 +339,7 @@ fun App(
                         if (photos.isEmpty()) {
                             EmptyGrid(
                                 hasProfile = activeProfile != null,
-                                onAddPhotos = {
-                                    if (activeProfile == null) {
-                                        showAddProfileDialog = true
-                                    } else {
-                                        onAddPhotos()
-                                    }
-                                },
+                                onAddPhotos = ::requestAddPhotos,
                                 modifier = Modifier.weight(1f),
                             )
                         } else {
@@ -371,6 +373,26 @@ fun App(
             )
         }
 
+        if (showPhotoSourceDialog && activeProfile != null) {
+            PhotoSourceDialog(
+                onDismiss = { showPhotoSourceDialog = false },
+                onSamsungGallery = onAddPhotosFromSamsungGallery?.let { openSamsungGallery ->
+                    {
+                        showPhotoSourceDialog = false
+                        openSamsungGallery()
+                    }
+                },
+                onPhotoPicker = {
+                    showPhotoSourceDialog = false
+                    onAddPhotos()
+                },
+                onDeviceFolders = {
+                    showPhotoSourceDialog = false
+                    onAddPhotosFromDevice()
+                },
+            )
+        }
+
         if (showAddProfileDialog) {
             AddProfileDialog(
                 canDismiss = profiles.isNotEmpty(),
@@ -394,6 +416,86 @@ fun App(
                     photosToMove = null
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun PhotoSourceDialog(
+    onDismiss: () -> Unit,
+    onSamsungGallery: (() -> Unit)?,
+    onPhotoPicker: () -> Unit,
+    onDeviceFolders: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add photos") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Choose where you want to select images from.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (onSamsungGallery != null) {
+                    PhotoSourceOption(
+                        icon = Icons.Filled.Collections,
+                        title = "Samsung Gallery",
+                        description = "Open your phone's Gallery app directly",
+                        onClick = onSamsungGallery,
+                    )
+                }
+                PhotoSourceOption(
+                    icon = Icons.Filled.PhotoLibrary,
+                    title = "Photo picker",
+                    description = "Google Photos and Android's recent photos",
+                    onClick = onPhotoPicker,
+                )
+                PhotoSourceOption(
+                    icon = Icons.Filled.FolderOpen,
+                    title = "Device folders",
+                    description = "Browse DCIM, Pictures, Downloads and phone storage",
+                    onClick = onDeviceFolders,
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun PhotoSourceOption(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Column(modifier = Modifier.padding(start = 14.dp)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -744,8 +846,8 @@ private fun PhotoGrid(
             items = photos,
             key = { _, photo -> photo.id },
         ) { index, photo ->
-            val selectionPosition = selectedIds.indexOf(photo.id)
-            val isSelected = selectionPosition >= 0
+            val isSelected = photo.id in selectedIds
+            val isSelectionMode = selectedIds.isNotEmpty()
             var dragOffset by remember(photo.id) { mutableStateOf(Offset.Zero) }
             var dragDistance by remember(photo.id) { mutableStateOf(0f) }
             var isDragging by remember(photo.id) { mutableStateOf(false) }
@@ -771,13 +873,6 @@ private fun PhotoGrid(
                     }
                     .scale(if (isDragging) 0.94f else 1f)
                     .alpha(if (isDragging) 0.72f else 1f)
-                    .then(
-                        if (isSelected) {
-                            Modifier.border(3.dp, MaterialTheme.colorScheme.primary)
-                        } else {
-                            Modifier
-                        },
-                    )
                     .pointerInput(photo.id, photos.size) {
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
@@ -871,24 +966,29 @@ private fun PhotoGrid(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.18f)),
+                            .background(Color.Black.copy(alpha = 0.12f)),
                     )
-                    Surface(
+                }
+                if (isSelectionMode) {
+                    Box(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .size(28.dp),
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary,
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = (selectionPosition + 1).toString(),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                fontWeight = FontWeight.Bold,
+                            .padding(6.dp)
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.Black.copy(alpha = 0.18f)
+                                },
                             )
-                        }
-                    }
+                            .border(
+                                width = 1.5.dp,
+                                color = Color.White.copy(alpha = if (isSelected) 1f else 0.9f),
+                                shape = CircleShape,
+                            ),
+                    )
                 }
             }
         }
