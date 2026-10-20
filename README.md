@@ -21,6 +21,7 @@ Post Planner is a private, offline-first Instagram grid planner. Import photos f
 
 - Preview posts in a modern, packed Instagram-style grid.
 - Add several photos at once from Samsung Gallery, the Android photo picker, or device folders.
+- Group up to 20 photos into a carousel, reorder its slides, and save a separate reusable caption for each image.
 - Long-press and drag a photo to reorder the grid with live movement.
 - Select photos and **change, swap, archive, delete, copy, or move** them.
 - Keep separate plans for multiple Instagram profiles.

@@ -1,11 +1,15 @@
 package com.nagaraju.postplanner
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -22,8 +26,14 @@ class MainActivity : ComponentActivity() {
     private val persistenceRunnable = Runnable { persistStateNow() }
     private var pickerProfileId: String? = null
     private var replacementProfileId: String? = null
-    private var replacementPhotoId: String? = null
+    private var replacementPostId: String? = null
+    private var replacementImageId: String? = null
     private var profilePicturePickerProfileId: String? = null
+    private val pendingUploadCount = mutableStateOf(0)
+    private var pendingUploadProfileId: String? = null
+    private var pendingUploadUris: List<Uri> = emptyList()
+    private var carouselPickerProfileId: String? = null
+    private var carouselPickerPostId: String? = null
     private val pickPhotos = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(50),
         ::addSelectedPhotos,
@@ -57,8 +67,22 @@ class MainActivity : ComponentActivity() {
         val profileId = pickerProfileId ?: activeProfileId.value
         pickerProfileId = null
 
-        if (profileId != null) {
-            val newPhotos = selectedUris.mapNotNull { uri ->
+        if (profileId == null || selectedUris.isEmpty()) return
+        if (selectedUris.size > 1) {
+            pendingUploadProfileId = profileId
+            pendingUploadUris = selectedUris
+            pendingUploadCount.value = selectedUris.size
+        } else {
+            importSelectedPhotos(profileId, selectedUris, asCarousel = false)
+        }
+    }
+
+    private fun importSelectedPhotos(
+        profileId: String,
+        selectedUris: List<Uri>,
+        asCarousel: Boolean,
+    ) {
+        val newPhotos = selectedUris.mapNotNull { uri ->
                 plannerStorage.importImage(uri, "post")?.let { image ->
                     PhotoItem(
                         id = "${uri}#${System.nanoTime()}",
@@ -67,8 +91,79 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        if (newPhotos.isEmpty()) return
+        val posts = if (asCarousel) {
+            val cover = newPhotos.first()
+            listOf(
+                cover.copy(
+                    carouselImages = newPhotos.drop(1).map { photo ->
+                        CarouselImage(
+                            id = photo.imageId,
+                            bitmap = photo.bitmap,
+                            storagePath = photo.storagePath,
+                        )
+                    },
+                ),
+            )
+        } else {
+            newPhotos
+        }
+        updateProfile(profileId) { profile ->
+            profile.copy(photos = posts + profile.photos)
+        }
+    }
+
+    private fun completePendingUpload(asCarousel: Boolean) {
+        val profileId = pendingUploadProfileId
+        val uris = pendingUploadUris
+        clearPendingUpload()
+        if (profileId != null && uris.isNotEmpty()) {
+            importSelectedPhotos(
+                profileId = profileId,
+                selectedUris = if (asCarousel) uris.take(MAX_CAROUSEL_IMAGES) else uris,
+                asCarousel = asCarousel,
+            )
+        }
+    }
+
+    private fun clearPendingUpload() {
+        pendingUploadProfileId = null
+        pendingUploadUris = emptyList()
+        pendingUploadCount.value = 0
+    }
+
+    private val pickCarouselPhotos = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_CAROUSEL_IMAGES),
+    ) { selectedUris ->
+        val profileId = carouselPickerProfileId
+        val postId = carouselPickerPostId
+        carouselPickerProfileId = null
+        carouselPickerPostId = null
+        if (profileId != null && postId != null && selectedUris.isNotEmpty()) {
+            val post = profiles.firstOrNull { it.id == profileId }
+                ?.photos
+                ?.firstOrNull { it.id == postId }
+            val availableSlots = MAX_CAROUSEL_IMAGES - (post?.images()?.size ?: MAX_CAROUSEL_IMAGES)
+            if (availableSlots <= 0) return@registerForActivityResult
+            val addedImages = selectedUris.take(availableSlots).mapNotNull { uri ->
+                plannerStorage.importImage(uri, "post")?.let { image ->
+                    CarouselImage(
+                        id = "${uri}#${System.nanoTime()}",
+                        bitmap = image.bitmap,
+                        storagePath = image.path,
+                    )
+                }
+            }
             updateProfile(profileId) { profile ->
-                profile.copy(photos = newPhotos + profile.photos)
+                profile.copy(
+                    photos = profile.photos.map { photo ->
+                        if (photo.id == postId) {
+                            photo.withImages(photo.images() + addedImages)
+                        } else {
+                            photo
+                        }
+                    },
+                )
             }
         }
     }
@@ -77,19 +172,32 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         val profileId = replacementProfileId
-        val photoId = replacementPhotoId
+        val postId = replacementPostId
+        val imageId = replacementImageId
         replacementProfileId = null
-        replacementPhotoId = null
+        replacementPostId = null
+        replacementImageId = null
 
-        if (uri != null && profileId != null && photoId != null) {
+        if (uri != null && profileId != null && postId != null && imageId != null) {
             plannerStorage.importImage(uri, "post")?.let { image ->
                 updateProfile(profileId) { profile ->
                     profile.copy(
-                        photos = profile.photos.map { photo ->
-                            if (photo.id == photoId) {
-                                photo.copy(bitmap = image.bitmap, storagePath = image.path)
+                        photos = profile.photos.map { post ->
+                            if (post.id == postId) {
+                                post.withImages(
+                                    post.images().map { carouselImage ->
+                                        if (carouselImage.id == imageId) {
+                                            carouselImage.copy(
+                                                bitmap = image.bitmap,
+                                                storagePath = image.path,
+                                            )
+                                        } else {
+                                            carouselImage
+                                        }
+                                    },
+                                )
                             } else {
-                                photo
+                                post
                             }
                         },
                     )
@@ -164,15 +272,17 @@ class MainActivity : ComponentActivity() {
                         pickDevicePhotos.launch(arrayOf("image/*"))
                     }
                 },
+                pendingUploadCount = pendingUploadCount.value,
+                onChooseUploadMode = ::completePendingUpload,
+                onCancelPendingUpload = ::clearPendingUpload,
                 onChangePhoto = { photoId ->
                     activeProfileId.value?.let { profileId ->
-                        replacementProfileId = profileId
-                        replacementPhotoId = photoId
-                        pickReplacementPhoto.launch(
-                            PickVisualMediaRequest(
-                                mediaType = ActivityResultContracts.PickVisualMedia.ImageOnly,
-                            ),
-                        )
+                        profiles.firstOrNull { it.id == profileId }
+                            ?.photos
+                            ?.firstOrNull { it.id == photoId }
+                            ?.let { post ->
+                                launchReplacementPicker(profileId, post.id, post.imageId)
+                            }
                     }
                 },
                 onCopyPhotos = { selectedIds ->
@@ -283,6 +393,96 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 },
+                onAddCarouselImages = { postId ->
+                    activeProfileId.value?.let { profileId ->
+                        val post = profiles.firstOrNull { it.id == profileId }
+                            ?.photos
+                            ?.firstOrNull { it.id == postId }
+                        if (post != null && post.images().size < MAX_CAROUSEL_IMAGES) {
+                            carouselPickerProfileId = profileId
+                            carouselPickerPostId = postId
+                            pickCarouselPhotos.launch(
+                                PickVisualMediaRequest(
+                                    mediaType = ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                ),
+                            )
+                        }
+                    }
+                },
+                onChangeCarouselImage = { postId, imageId ->
+                    activeProfileId.value?.let { profileId ->
+                        launchReplacementPicker(profileId, postId, imageId)
+                    }
+                },
+                onDeleteCarouselImage = { postId, imageId ->
+                    activeProfileId.value?.let { profileId ->
+                        updateProfile(profileId) { profile ->
+                            val post = profile.photos.firstOrNull { it.id == postId }
+                            if (post == null) {
+                                profile
+                            } else if (post.images().size == 1) {
+                                profile.copy(photos = profile.photos.filterNot { it.id == postId })
+                            } else {
+                                profile.copy(
+                                    photos = profile.photos.map { currentPost ->
+                                        if (currentPost.id == postId) {
+                                            currentPost.withImages(
+                                                currentPost.images().filterNot { it.id == imageId },
+                                            )
+                                        } else {
+                                            currentPost
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                },
+                onUpdateImageCaption = { postId, imageId, caption ->
+                    activeProfileId.value?.let { profileId ->
+                        updateProfile(profileId) { profile ->
+                            profile.copy(
+                                photos = profile.photos.map { post ->
+                                    if (post.id == postId) {
+                                        post.withImages(
+                                            post.images().map { image ->
+                                                if (image.id == imageId) image.copy(caption = caption) else image
+                                            },
+                                        )
+                                    } else {
+                                        post
+                                    }
+                                },
+                            )
+                        }
+                    }
+                },
+                onReorderCarouselImage = { postId, draggedImageId, targetImageId ->
+                    activeProfileId.value?.let { profileId ->
+                        updateProfile(profileId) { profile ->
+                            profile.copy(
+                                photos = profile.photos.map { post ->
+                                    if (post.id != postId) return@map post
+                                    val images = post.images().toMutableList()
+                                    val draggedIndex = images.indexOfFirst { it.id == draggedImageId }
+                                    val targetIndex = images.indexOfFirst { it.id == targetImageId }
+                                    if (draggedIndex >= 0 && targetIndex >= 0 && draggedIndex != targetIndex) {
+                                        val moved = images.removeAt(draggedIndex)
+                                        images.add(targetIndex.coerceAtMost(images.size), moved)
+                                        post.withImages(images)
+                                    } else {
+                                        post
+                                    }
+                                },
+                            )
+                        }
+                    }
+                },
+                onCopyCaption = { caption ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Post caption", caption))
+                    Toast.makeText(this, "Caption copied", Toast.LENGTH_SHORT).show()
+                },
                 onUpdateProfile = { displayName, bio, website, followers, following ->
                     activeProfileId.value?.let { profileId ->
                         updateProfile(profileId) { profile ->
@@ -342,6 +542,21 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun launchReplacementPicker(
+        profileId: String,
+        postId: String,
+        imageId: String,
+    ) {
+        replacementProfileId = profileId
+        replacementPostId = postId
+        replacementImageId = imageId
+        pickReplacementPhoto.launch(
+            PickVisualMediaRequest(
+                mediaType = ActivityResultContracts.PickVisualMedia.ImageOnly,
+            ),
+        )
+    }
+
     private fun launchSamsungGallery(profileId: String) {
         pickerProfileId = profileId
         val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
@@ -381,6 +596,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val PERSISTENCE_DELAY_MILLIS = 250L
         const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
+        const val MAX_CAROUSEL_IMAGES = 20
     }
 
 }

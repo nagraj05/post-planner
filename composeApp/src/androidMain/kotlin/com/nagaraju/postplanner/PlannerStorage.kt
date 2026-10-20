@@ -126,6 +126,19 @@ internal class PlannerStorage(private val context: Context) {
                 put(JSONObject().apply {
                     put("id", photo.id)
                     put("storagePath", path)
+                    put("imageId", photo.imageId)
+                    put("caption", photo.caption)
+                    put("carouselImages", JSONArray().apply {
+                        photo.carouselImages.forEach { image ->
+                            image.storagePath?.let { imagePath ->
+                                put(JSONObject().apply {
+                                    put("id", image.id)
+                                    put("storagePath", imagePath)
+                                    put("caption", image.caption)
+                                })
+                            }
+                        }
+                    })
                 })
             }
         }
@@ -138,7 +151,34 @@ internal class PlannerStorage(private val context: Context) {
                 val item = array.getJSONObject(index)
                 val path = item.getString("storagePath")
                 path.loadBitmap()?.let { bitmap ->
-                    add(PhotoItem(id = item.getString("id"), bitmap = bitmap, storagePath = path))
+                    val postId = item.getString("id")
+                    val carouselArray = item.optJSONArray("carouselImages") ?: JSONArray()
+                    val carouselImages = buildList {
+                        for (imageIndex in 0 until carouselArray.length()) {
+                            val imageJson = carouselArray.getJSONObject(imageIndex)
+                            val imagePath = imageJson.getString("storagePath")
+                            imagePath.loadBitmap()?.let { imageBitmap ->
+                                add(
+                                    CarouselImage(
+                                        id = imageJson.getString("id"),
+                                        bitmap = imageBitmap,
+                                        storagePath = imagePath,
+                                        caption = imageJson.optString("caption"),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    add(
+                        PhotoItem(
+                            id = postId,
+                            bitmap = bitmap,
+                            storagePath = path,
+                            imageId = item.optString("imageId").ifBlank { postId },
+                            caption = item.optString("caption"),
+                            carouselImages = carouselImages,
+                        ),
+                    )
                 }
             }
         }
@@ -158,8 +198,10 @@ internal class PlannerStorage(private val context: Context) {
         val referencedPaths = buildSet {
             profiles.forEach { profile ->
                 profile.profilePicturePath?.let(::add)
-                profile.photos.mapNotNullTo(this) { it.storagePath }
-                profile.archivedPhotos.mapNotNullTo(this) { it.storagePath }
+                (profile.photos + profile.archivedPhotos).forEach { post ->
+                    post.storagePath?.let(::add)
+                    post.carouselImages.mapNotNullTo(this) { it.storagePath }
+                }
             }
         }
         mediaDirectory.listFiles()?.forEach { file ->
@@ -172,7 +214,7 @@ internal class PlannerStorage(private val context: Context) {
     private companion object {
         const val PREFERENCES_NAME = "post_planner_storage"
         const val STATE_KEY = "planner_state"
-        const val STATE_VERSION = 1
+        const val STATE_VERSION = 2
         const val MEDIA_DIRECTORY_NAME = "planner_media"
         const val JPEG_QUALITY = 90
     }

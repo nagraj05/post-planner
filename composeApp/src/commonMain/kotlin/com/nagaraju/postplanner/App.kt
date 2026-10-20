@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -38,6 +42,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -67,6 +72,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -93,15 +99,49 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import kotlin.math.round
 import kotlin.math.roundToInt
+
+private const val MAX_CAROUSEL_IMAGES = 20
 
 data class PhotoItem(
     val id: String,
     val bitmap: ImageBitmap,
     val storagePath: String? = null,
+    val imageId: String = id,
+    val caption: String = "",
+    val carouselImages: List<CarouselImage> = emptyList(),
 )
+
+data class CarouselImage(
+    val id: String,
+    val bitmap: ImageBitmap,
+    val storagePath: String? = null,
+    val caption: String = "",
+)
+
+fun PhotoItem.images(): List<CarouselImage> = listOf(
+    CarouselImage(
+        id = imageId,
+        bitmap = bitmap,
+        storagePath = storagePath,
+        caption = caption,
+    ),
+) + carouselImages
+
+fun PhotoItem.withImages(images: List<CarouselImage>): PhotoItem {
+    val cover = images.firstOrNull() ?: return this
+    return copy(
+        bitmap = cover.bitmap,
+        storagePath = cover.storagePath,
+        imageId = cover.id,
+        caption = cover.caption,
+        carouselImages = images.drop(1),
+    )
+}
 
 data class PlannerProfile(
     val id: String,
@@ -134,6 +174,9 @@ fun App(
     onAddPhotos: () -> Unit,
     onAddPhotosFromSamsungGallery: (() -> Unit)?,
     onAddPhotosFromDevice: () -> Unit,
+    pendingUploadCount: Int,
+    onChooseUploadMode: (asCarousel: Boolean) -> Unit,
+    onCancelPendingUpload: () -> Unit,
     onChangePhoto: (photoId: String) -> Unit,
     onCopyPhotos: (Set<String>) -> Unit,
     onMovePhotos: (photoIds: Set<String>, targetProfileId: String) -> Unit,
@@ -143,6 +186,12 @@ fun App(
     onDeletePhotos: (Set<String>) -> Unit,
     onSwapPhotos: (firstId: String, secondId: String) -> Unit,
     onReorderPhoto: (draggedId: String, targetId: String) -> Unit,
+    onAddCarouselImages: (postId: String) -> Unit,
+    onChangeCarouselImage: (postId: String, imageId: String) -> Unit,
+    onDeleteCarouselImage: (postId: String, imageId: String) -> Unit,
+    onUpdateImageCaption: (postId: String, imageId: String, caption: String) -> Unit,
+    onReorderCarouselImage: (postId: String, draggedImageId: String, targetImageId: String) -> Unit,
+    onCopyCaption: (caption: String) -> Unit,
     onUpdateProfile: (
         displayName: String,
         bio: String,
@@ -168,6 +217,7 @@ fun App(
         var showEditProfileDialog by remember { mutableStateOf(false) }
         var showSettingsPage by remember { mutableStateOf(false) }
         var showArchive by remember { mutableStateOf(false) }
+        var openedPostId by remember { mutableStateOf<String?>(null) }
         var photosToMove by remember { mutableStateOf<Set<String>?>(null) }
         val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
 
@@ -225,6 +275,8 @@ fun App(
                 bottomBar = {
                     if (showSettingsPage) {
                         // Settings is a full page and does not use the grid action bar.
+                    } else if (openedPostId != null) {
+                        // Post details provide their own actions.
                     } else if (showArchive && selectedIds.isNotEmpty()) {
                         ArchiveSelectionBar(
                             selectedCount = selectedIds.size,
@@ -240,14 +292,7 @@ fun App(
                         )
                     } else if (!showArchive && selectedIds.isEmpty()) {
                         AddPhotoBar(
-                            archiveCount = activeProfile?.archivedPhotos?.size ?: 0,
                             onAddPhotos = ::requestAddPhotos,
-                            onOpenArchive = {
-                                if (activeProfile != null) {
-                                    selectedIds.clear()
-                                    showArchive = true
-                                }
-                            },
                         )
                     } else if (!showArchive) {
                         SelectionBar(
@@ -294,6 +339,30 @@ fun App(
                             onThemeSelected = onThemeSelected,
                             onBack = { showSettingsPage = false },
                         )
+                    } else if (openedPostId != null) {
+                        val openedPost = activeProfile?.photos?.firstOrNull { it.id == openedPostId }
+                        if (openedPost == null) {
+                            LaunchedEffect(openedPostId) { openedPostId = null }
+                        } else {
+                            PostDetailPage(
+                                post = openedPost,
+                                onBack = { openedPostId = null },
+                                onAddImages = { onAddCarouselImages(openedPost.id) },
+                                onChangeImage = { imageId ->
+                                    onChangeCarouselImage(openedPost.id, imageId)
+                                },
+                                onDeleteImage = { imageId ->
+                                    onDeleteCarouselImage(openedPost.id, imageId)
+                                },
+                                onSaveCaption = { imageId, caption ->
+                                    onUpdateImageCaption(openedPost.id, imageId, caption)
+                                },
+                                onCopyCaption = onCopyCaption,
+                                onReorderImage = { draggedImageId, targetImageId ->
+                                    onReorderCarouselImage(openedPost.id, draggedImageId, targetImageId)
+                                },
+                            )
+                        }
                     } else if (showArchive) {
                         ArchiveHeader(
                             handle = activeProfile?.handle.orEmpty(),
@@ -312,6 +381,7 @@ fun App(
                                 selectedIds = selectedIds,
                                 onToggleSelection = ::toggleSelection,
                                 onReorderPhoto = null,
+                                onOpenPhoto = null,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -320,7 +390,14 @@ fun App(
                             profile = activeProfile,
                             selectionCount = selectedIds.size,
                             canSwitchProfile = profiles.size > 1,
+                            archiveCount = activeProfile?.archivedPhotos?.size ?: 0,
                             onOpenMenu = { scope.launch { drawerState.open() } },
+                            onOpenArchive = {
+                                if (activeProfile != null) {
+                                    selectedIds.clear()
+                                    showArchive = true
+                                }
+                            },
                             onEditProfile = { showEditProfileDialog = true },
                             onSwitchProfile = {
                                 val currentIndex = profiles.indexOfFirst { it.id == activeProfileId }
@@ -348,6 +425,7 @@ fun App(
                                 selectedIds = selectedIds,
                                 onToggleSelection = ::toggleSelection,
                                 onReorderPhoto = onReorderPhoto,
+                                onOpenPhoto = { openedPostId = it },
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -390,6 +468,15 @@ fun App(
                     showPhotoSourceDialog = false
                     onAddPhotosFromDevice()
                 },
+            )
+        }
+
+        if (pendingUploadCount > 1) {
+            UploadModeDialog(
+                imageCount = pendingUploadCount,
+                onDismiss = onCancelPendingUpload,
+                onSeparate = { onChooseUploadMode(false) },
+                onCarousel = { onChooseUploadMode(true) },
             )
         }
 
@@ -464,6 +551,135 @@ private fun PhotoSourceDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+}
+
+@Composable
+private fun UploadModeDialog(
+    imageCount: Int,
+    onDismiss: () -> Unit,
+    onSeparate: () -> Unit,
+    onCarousel: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp),
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close")
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier.size(58.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Collections,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "How should these be added?",
+                    modifier = Modifier.padding(top = 16.dp),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = "$imageCount photos selected",
+                    modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    UploadModeOption(
+                        title = "Separate",
+                        description = "One post for each photo",
+                        onClick = onSeparate,
+                        modifier = Modifier.weight(1f),
+                    )
+                    UploadModeOption(
+                        title = "Carousel",
+                        description = "One post with all photos",
+                        onClick = onCarousel,
+                        enabled = imageCount <= MAX_CAROUSEL_IMAGES,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                if (imageCount > MAX_CAROUSEL_IMAGES) {
+                    Text(
+                        text = "A carousel can contain up to $MAX_CAROUSEL_IMAGES photos.",
+                        modifier = Modifier.padding(top = 14.dp),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UploadModeOption(
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    Surface(
+        modifier = modifier
+            .alpha(if (enabled) 1f else 0.42f)
+            .clip(MaterialTheme.shapes.large)
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = title,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = description,
+                modifier = Modifier.padding(top = 4.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
 }
 
 @Composable
@@ -581,7 +797,9 @@ private fun Header(
     profile: PlannerProfile?,
     selectionCount: Int,
     canSwitchProfile: Boolean,
+    archiveCount: Int,
     onOpenMenu: () -> Unit,
+    onOpenArchive: () -> Unit,
     onEditProfile: () -> Unit,
     onSwitchProfile: () -> Unit,
 ) {
@@ -611,12 +829,42 @@ private fun Header(
             )
         }
         if (profile != null && selectionCount == 0) {
-            ProfileAvatarSwitcher(
-                profile = profile,
-                canSwitchProfile = canSwitchProfile,
-                onEditProfile = onEditProfile,
-                onSwitchProfile = onSwitchProfile,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(48.dp)) {
+                    IconButton(onClick = onOpenArchive) {
+                        Icon(
+                            imageVector = Icons.Filled.Archive,
+                            contentDescription = if (archiveCount == 0) {
+                                "Open archive"
+                            } else {
+                                "Open archive, $archiveCount posts"
+                            },
+                        )
+                    }
+                    if (archiveCount > 0) {
+                        Surface(
+                            modifier = Modifier.align(Alignment.TopEnd).size(18.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = if (archiveCount > 9) "9+" else archiveCount.toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                }
+                ProfileAvatarSwitcher(
+                    profile = profile,
+                    canSwitchProfile = canSwitchProfile,
+                    onEditProfile = onEditProfile,
+                    onSwitchProfile = onSwitchProfile,
+                )
+            }
         }
     }
 }
@@ -764,14 +1012,6 @@ private fun ProfilePreview(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            if (profile.displayName.isBlank() && profile.bio.isBlank() && profile.website.isBlank()) {
-                Text(
-                    text = "Tap to add a profile picture, name, bio and website",
-                    modifier = Modifier.padding(top = 10.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
         }
     }
 }
@@ -833,6 +1073,7 @@ private fun PhotoGrid(
     selectedIds: List<String>,
     onToggleSelection: (String) -> Unit,
     onReorderPhoto: ((draggedId: String, targetId: String) -> Unit)?,
+    onOpenPhoto: ((photoId: String) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     LazyVerticalGrid(
@@ -953,6 +1194,8 @@ private fun PhotoGrid(
                             suppressClick = false
                         } else if (selectedIds.isNotEmpty()) {
                             onToggleSelection(photo.id)
+                        } else {
+                            onOpenPhoto?.invoke(photo.id)
                         }
                     },
             ) {
@@ -989,6 +1232,339 @@ private fun PhotoGrid(
                                 shape = CircleShape,
                             ),
                     )
+                }
+                if (photo.carouselImages.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.58f),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Collections,
+                            contentDescription = "Carousel with ${photo.images().size} photos",
+                            tint = Color.White,
+                            modifier = Modifier.padding(5.dp).size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PostDetailPage(
+    post: PhotoItem,
+    onBack: () -> Unit,
+    onAddImages: () -> Unit,
+    onChangeImage: (imageId: String) -> Unit,
+    onDeleteImage: (imageId: String) -> Unit,
+    onSaveCaption: (imageId: String, caption: String) -> Unit,
+    onCopyCaption: (String) -> Unit,
+    onReorderImage: (draggedImageId: String, targetImageId: String) -> Unit,
+) {
+    val images = post.images()
+    val imageListState = rememberLazyListState()
+    val thumbnailListState = rememberLazyListState()
+    val imageSnapFlingBehavior = rememberSnapFlingBehavior(lazyListState = imageListState)
+    val scope = rememberCoroutineScope()
+    val visibleImageIndex by remember(imageListState, images.size) {
+        derivedStateOf {
+            val layoutInfo = imageListState.layoutInfo
+            val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+            layoutInfo.visibleItemsInfo.minByOrNull { item ->
+                kotlin.math.abs((item.offset + item.size / 2) - viewportCenter)
+            }?.index?.coerceIn(images.indices) ?: 0
+        }
+    }
+    val visibleImage = images.getOrElse(visibleImageIndex) { images.first() }
+    var draftCaption by remember(post.id, visibleImage.id, visibleImage.caption) {
+        mutableStateOf(visibleImage.caption)
+    }
+    var fullScreenImageId by remember(post.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(visibleImageIndex, images.size) {
+        if (visibleImageIndex in images.indices) {
+            thumbnailListState.animateScrollToItem(visibleImageIndex)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "Back to grid")
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Post preview", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Photo ${visibleImageIndex + 1} of ${images.size}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 12.dp),
+        ) {
+            LazyRow(
+                state = imageListState,
+                flingBehavior = imageSnapFlingBehavior,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(items = images, key = { it.id }) { image ->
+                    Box(
+                        modifier = Modifier
+                            .fillParentMaxWidth()
+                            .fillParentMaxHeight()
+                            .padding(horizontal = 4.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            bitmap = image.bitmap,
+                            contentDescription = "Carousel photo ${images.indexOf(image) + 1}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(MaterialTheme.shapes.large),
+                        )
+                        IconButton(
+                            onClick = { fullScreenImageId = image.id },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(12.dp)
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.58f)),
+                        ) {
+                            Icon(
+                                Icons.Filled.Fullscreen,
+                                contentDescription = "View full screen",
+                                tint = Color.White,
+                            )
+                        }
+                        IconButton(
+                            onClick = { onChangeImage(image.id) },
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(12.dp)
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.58f)),
+                        ) {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = "Change image",
+                                tint = Color.White,
+                            )
+                        }
+                        IconButton(
+                            onClick = { onDeleteImage(image.id) },
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(12.dp)
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.58f)),
+                        ) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = "Delete image",
+                                tint = Color.White,
+                            )
+                        }
+                    }
+                }
+            }
+
+        }
+
+        if (images.isNotEmpty()) {
+            LazyRow(
+                state = thumbnailListState,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(items = images, key = { it.id }) { image ->
+                    val index = images.indexOfFirst { it.id == image.id }
+                    var dragOffsetX by remember(image.id) { mutableStateOf(0f) }
+                    var workingIndex by remember(image.id) { mutableStateOf(index) }
+                    var dragOrder by remember(image.id) { mutableStateOf<List<String>>(emptyList()) }
+                    var isDragging by remember(image.id) { mutableStateOf(false) }
+                    val latestImages by rememberUpdatedState(images)
+                    val latestIndex by rememberUpdatedState(index)
+                    val latestReorder by rememberUpdatedState(onReorderImage)
+
+                    Box(
+                        modifier = Modifier
+                            .size(68.dp)
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .offset { IntOffset(dragOffsetX.roundToInt(), 0) }
+                            .scale(if (isDragging) 1.08f else 1f)
+                            .alpha(if (isDragging) 0.82f else 1f)
+                            .clip(MaterialTheme.shapes.medium)
+                            .border(
+                                width = if (image.id == visibleImage.id) 3.dp else 1.dp,
+                                color = if (image.id == visibleImage.id) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                },
+                                shape = MaterialTheme.shapes.medium,
+                            )
+                            .pointerInput(image.id, images.size) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        isDragging = true
+                                        dragOffsetX = 0f
+                                        workingIndex = latestIndex
+                                        dragOrder = latestImages.map { it.id }
+                                    },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        dragOffsetX += amount.x
+                                        val itemWidth = size.width + 8.dp.toPx()
+                                        val targetIndex = (
+                                            (workingIndex * itemWidth + size.width / 2f + dragOffsetX) /
+                                                itemWidth
+                                            ).toInt().coerceIn(0, dragOrder.lastIndex)
+                                        if (targetIndex != workingIndex && dragOrder.isNotEmpty()) {
+                                            val targetId = dragOrder[targetIndex]
+                                            latestReorder(image.id, targetId)
+                                            val updatedOrder = dragOrder.toMutableList()
+                                            val draggedId = updatedOrder.removeAt(workingIndex)
+                                            updatedOrder.add(targetIndex, draggedId)
+                                            dragOrder = updatedOrder
+                                            dragOffsetX -= (targetIndex - workingIndex) * itemWidth
+                                            workingIndex = targetIndex
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        isDragging = false
+                                        dragOffsetX = 0f
+                                        dragOrder = emptyList()
+                                    },
+                                    onDragCancel = {
+                                        isDragging = false
+                                        dragOffsetX = 0f
+                                        dragOrder = emptyList()
+                                    },
+                                )
+                            }
+                            .clickable {
+                                scope.launch { imageListState.animateScrollToItem(index) }
+                            },
+                    ) {
+                        Image(
+                            bitmap = image.bitmap,
+                            contentDescription = "Open photo ${index + 1}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+
+                if (images.size < MAX_CAROUSEL_IMAGES) {
+                    item(key = "add-carousel-thumbnail") {
+                        Surface(
+                            onClick = onAddImages,
+                            modifier = Modifier.size(68.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                            ),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.Add,
+                                    contentDescription = "Add photos to carousel",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 6.dp,
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                OutlinedTextField(
+                    value = draftCaption,
+                    onValueChange = { draftCaption = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Caption for photo ${visibleImageIndex + 1}") },
+                    placeholder = { Text("Write a caption…") },
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (visibleImage.caption.isNotBlank()) {
+                        IconButton(onClick = { onCopyCaption(visibleImage.caption) }) {
+                            Icon(Icons.Filled.ContentCopy, "Copy saved caption")
+                        }
+                    }
+                    Button(
+                        onClick = { onSaveCaption(visibleImage.id, draftCaption.trim()) },
+                        enabled = draftCaption.trim() != visibleImage.caption,
+                    ) {
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
+
+    fullScreenImageId?.let { imageId ->
+        images.firstOrNull { it.id == imageId }?.let { image ->
+            Dialog(
+                onDismissRequest = { fullScreenImageId = null },
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Black,
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Image(
+                            bitmap = image.bitmap,
+                            contentDescription = "Full-screen photo",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        IconButton(
+                            onClick = { fullScreenImageId = null },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Close full screen",
+                                tint = Color.White,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1451,9 +2027,7 @@ private fun EmptyArchive(modifier: Modifier = Modifier) {
 
 @Composable
 private fun AddPhotoBar(
-    archiveCount: Int,
     onAddPhotos: () -> Unit,
-    onOpenArchive: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1474,21 +2048,6 @@ private fun AddPhotoBar(
                 Icon(
                     imageVector = Icons.Filled.Add,
                     contentDescription = "Add photos",
-                )
-            }
-            Column(
-                modifier = Modifier.padding(start = 22.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                IconButton(onClick = onOpenArchive) {
-                    Icon(
-                        imageVector = Icons.Filled.Archive,
-                        contentDescription = "View archived photos",
-                    )
-                }
-                Text(
-                    text = if (archiveCount == 0) "Archive" else "Archive ($archiveCount)",
-                    style = MaterialTheme.typography.labelSmall,
                 )
             }
         }
