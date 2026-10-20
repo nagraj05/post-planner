@@ -22,5 +22,6 @@ fun MainViewController() = ComposeUIViewController {
         onReorderPhoto = { _, _ -> },
         onUpdateProfile = { _, _, _, _, _ -> },
         onPickProfilePicture = {},
+        onDeleteProfile = {},
     )
 }

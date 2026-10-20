@@ -270,6 +270,18 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 },
+                onDeleteProfile = { profileId ->
+                    val profileIndex = profiles.indexOfFirst { it.id == profileId }
+                    if (profileIndex >= 0) {
+                        profiles.removeAt(profileIndex)
+                        if (activeProfileId.value == profileId) {
+                            activeProfileId.value = profiles
+                                .getOrNull(profileIndex.coerceAtMost(profiles.lastIndex))
+                                ?.id
+                        }
+                        persistState()
+                    }
+                },
             )
         }
     }

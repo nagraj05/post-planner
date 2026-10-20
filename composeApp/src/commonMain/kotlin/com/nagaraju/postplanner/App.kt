@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FloatingActionButton
@@ -144,6 +146,7 @@ fun App(
         followingCount: Long,
     ) -> Unit,
     onPickProfilePicture: () -> Unit,
+    onDeleteProfile: (profileId: String) -> Unit,
 ) {
     val useDarkTheme = when (themeMode) {
         AppThemeMode.System -> isSystemInDarkTheme()
@@ -358,6 +361,11 @@ fun App(
                 onPickProfilePicture = onPickProfilePicture,
                 onSave = { displayName, bio, website, followers, following ->
                     onUpdateProfile(displayName, bio, website, followers, following)
+                    showEditProfileDialog = false
+                },
+                onDelete = {
+                    selectedIds.clear()
+                    onDeleteProfile(activeProfile.id)
                     showEditProfileDialog = false
                 },
             )
@@ -1085,22 +1093,131 @@ private fun EditProfileDialog(
     onDismiss: () -> Unit,
     onPickProfilePicture: () -> Unit,
     onSave: (String, String, String, Long, Long) -> Unit,
+    onDelete: () -> Unit,
 ) {
     var displayName by remember(profile.id) { mutableStateOf(profile.displayName) }
     var bio by remember(profile.id) { mutableStateOf(profile.bio) }
     var website by remember(profile.id) { mutableStateOf(profile.website) }
     var followers by remember(profile.id) { mutableStateOf(profile.followersCount.toString()) }
     var following by remember(profile.id) { mutableStateOf(profile.followingCount.toString()) }
+    var showDeleteConfirmation by remember(profile.id) { mutableStateOf(false) }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            title = { Text("Delete ${profile.handle}?") },
+            text = {
+                Text(
+                    "This permanently removes the profile, grid, archived posts, " +
+                        "profile details and locally stored images from this device.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = null)
+                    Text("Delete", modifier = Modifier.padding(start = 8.dp))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) {
+                    Text("Keep profile")
+                }
+            },
+        )
+        return
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit profile preview") },
+        title = {
+            Column {
+                Text("Edit profile")
+                Text(
+                    text = profile.handle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Normal,
+                )
+            }
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                TextButton(onClick = onPickProfilePicture) {
-                    Icon(Icons.Filled.Person, contentDescription = null)
-                    Text("  Change profile picture")
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(72.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                        ) {
+                            if (profile.profilePicture != null) {
+                                Image(
+                                    bitmap = profile.profilePicture,
+                                    contentDescription = "Profile picture preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Person,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(38.dp),
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    )
+                                }
+                            }
+                        }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 14.dp),
+                        ) {
+                            Text(
+                                text = displayName.ifBlank { profile.handle },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "${formatSocialCount(followers.toLongOrNull() ?: 0)} followers",
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = onPickProfilePicture) {
+                                Text("Change photo")
+                            }
+                        }
+                    }
                 }
+
+                Text(
+                    text = "PROFILE DETAILS",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
@@ -1123,22 +1240,61 @@ private fun EditProfileDialog(
                     label = { Text("Website") },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = followers,
-                    onValueChange = { value -> followers = value.filter(Char::isDigit).take(18) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Followers") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = following,
-                    onValueChange = { value -> following = value.filter(Char::isDigit).take(18) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Following") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = followers,
+                        onValueChange = { value -> followers = value.filter(Char::isDigit).take(18) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Followers") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = following,
+                        onValueChange = { value -> following = value.filter(Char::isDigit).take(18) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Following") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                    )
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Delete profile",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "Remove this profile and all of its locally saved planner images.",
+                            modifier = Modifier.padding(top = 4.dp),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(
+                            onClick = { showDeleteConfirmation = true },
+                            modifier = Modifier.padding(top = 4.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                text = "Delete ${profile.handle}",
+                                modifier = Modifier.padding(start = 8.dp),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
