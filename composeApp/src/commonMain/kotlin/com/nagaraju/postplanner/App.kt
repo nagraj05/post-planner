@@ -1,11 +1,12 @@
 package com.nagaraju.postplanner
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.ContentCopy
@@ -43,24 +45,18 @@ import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Restore
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -69,7 +65,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -95,6 +90,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -209,14 +205,12 @@ fun App(
     }
 
     MaterialTheme(colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()) {
-        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-        val scope = rememberCoroutineScope()
         val selectedIds = remember { mutableStateListOf<String>() }
         var showAddProfileDialog by remember { mutableStateOf(false) }
         var showPhotoSourceDialog by remember { mutableStateOf(false) }
         var showEditProfileDialog by remember { mutableStateOf(false) }
-        var showSettingsPage by remember { mutableStateOf(false) }
         var showArchive by remember { mutableStateOf(false) }
+        var showAccountSwitcher by remember { mutableStateOf(false) }
         var openedPostId by remember { mutableStateOf<String?>(null) }
         var photosToMove by remember { mutableStateOf<Set<String>?>(null) }
         val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
@@ -243,38 +237,12 @@ fun App(
             }
         }
 
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                ProfileDrawer(
-                    profiles = profiles,
-                    activeProfileId = activeProfileId,
-                    onSelectProfile = { profileId ->
-                        selectedIds.clear()
-                        showArchive = false
-                        showSettingsPage = false
-                        onSelectProfile(profileId)
-                        scope.launch { drawerState.close() }
-                    },
-                    onAddProfile = {
-                        scope.launch { drawerState.close() }
-                        showAddProfileDialog = true
-                    },
-                    onOpenSettings = {
-                        scope.launch { drawerState.close() }
-                        selectedIds.clear()
-                        showArchive = false
-                        showSettingsPage = true
-                    },
-                )
-            },
-        ) {
-            Scaffold(
+        Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 containerColor = MaterialTheme.colorScheme.background,
                 bottomBar = {
-                    if (showSettingsPage) {
-                        // Settings is a full page and does not use the grid action bar.
+                    if (showEditProfileDialog) {
+                        // The profile editor is a full page with its own save action.
                     } else if (openedPostId != null) {
                         // Post details provide their own actions.
                     } else if (showArchive && selectedIds.isNotEmpty()) {
@@ -290,9 +258,36 @@ fun App(
                                 selectedIds.clear()
                             },
                         )
-                    } else if (!showArchive && selectedIds.isEmpty()) {
-                        AddPhotoBar(
+                    } else if (selectedIds.isEmpty()) {
+                        PlannerBottomBar(
+                            activeProfile = activeProfile,
+                            archiveSelected = showArchive,
+                            archiveCount = activeProfile?.archivedPhotos?.size ?: 0,
+                            canSwitchProfile = profiles.size > 1,
+                            onOpenArchive = {
+                                if (activeProfile != null) {
+                                    selectedIds.clear()
+                                    showArchive = true
+                                }
+                            },
                             onAddPhotos = ::requestAddPhotos,
+                            onOpenProfile = {
+                                if (activeProfile == null) {
+                                    showAddProfileDialog = true
+                                } else {
+                                    showEditProfileDialog = true
+                                }
+                            },
+                            onHoldProfile = { showAccountSwitcher = true },
+                            onSwitchProfile = {
+                                val currentIndex = profiles.indexOfFirst { it.id == activeProfileId }
+                                if (currentIndex >= 0 && profiles.size > 1) {
+                                    val nextProfile = profiles[(currentIndex + 1) % profiles.size]
+                                    selectedIds.clear()
+                                    showArchive = false
+                                    onSelectProfile(nextProfile.id)
+                                }
+                            },
                         )
                     } else if (!showArchive) {
                         SelectionBar(
@@ -333,11 +328,22 @@ fun App(
                         .fillMaxSize()
                         .padding(innerPadding),
                 ) {
-                    if (showSettingsPage) {
-                        SettingsPage(
+                    if (showEditProfileDialog && activeProfile != null) {
+                        EditProfilePage(
+                            profile = activeProfile,
                             selectedTheme = themeMode,
+                            onBack = { showEditProfileDialog = false },
                             onThemeSelected = onThemeSelected,
-                            onBack = { showSettingsPage = false },
+                            onPickProfilePicture = onPickProfilePicture,
+                            onSave = { displayName, bio, website, followers, following ->
+                                onUpdateProfile(displayName, bio, website, followers, following)
+                                showEditProfileDialog = false
+                            },
+                            onDelete = {
+                                selectedIds.clear()
+                                onDeleteProfile(activeProfile.id)
+                                showEditProfileDialog = false
+                            },
                         )
                     } else if (openedPostId != null) {
                         val openedPost = activeProfile?.photos?.firstOrNull { it.id == openedPostId }
@@ -388,28 +394,9 @@ fun App(
                     } else {
                         Header(
                             profile = activeProfile,
-                            selectionCount = selectedIds.size,
-                            canSwitchProfile = profiles.size > 1,
-                            archiveCount = activeProfile?.archivedPhotos?.size ?: 0,
-                            onOpenMenu = { scope.launch { drawerState.open() } },
-                            onOpenArchive = {
-                                if (activeProfile != null) {
-                                    selectedIds.clear()
-                                    showArchive = true
-                                }
-                            },
-                            onEditProfile = { showEditProfileDialog = true },
-                            onSwitchProfile = {
-                                val currentIndex = profiles.indexOfFirst { it.id == activeProfileId }
-                                if (currentIndex >= 0 && profiles.size > 1) {
-                                    val nextProfile = profiles[(currentIndex + 1) % profiles.size]
-                                    selectedIds.clear()
-                                    onSelectProfile(nextProfile.id)
-                                }
-                            },
                         )
                         activeProfile?.let {
-                            ProfilePreview(profile = it, onEditProfile = { showEditProfileDialog = true })
+                            ProfilePreview(profile = it)
                         }
 
                         val photos = activeProfile?.photos.orEmpty()
@@ -431,22 +418,22 @@ fun App(
                         }
                     }
                 }
-            }
         }
 
-        if (showEditProfileDialog && activeProfile != null) {
-            EditProfileDialog(
-                profile = activeProfile,
-                onDismiss = { showEditProfileDialog = false },
-                onPickProfilePicture = onPickProfilePicture,
-                onSave = { displayName, bio, website, followers, following ->
-                    onUpdateProfile(displayName, bio, website, followers, following)
-                    showEditProfileDialog = false
-                },
-                onDelete = {
+        if (showAccountSwitcher) {
+            AccountSwitcherSheet(
+                profiles = profiles,
+                activeProfileId = activeProfileId,
+                onDismiss = { showAccountSwitcher = false },
+                onSelectProfile = { profileId ->
                     selectedIds.clear()
-                    onDeleteProfile(activeProfile.id)
-                    showEditProfileDialog = false
+                    showArchive = false
+                    showAccountSwitcher = false
+                    onSelectProfile(profileId)
+                },
+                onAddProfile = {
+                    showAccountSwitcher = false
+                    showAddProfileDialog = true
                 },
             )
         }
@@ -527,8 +514,8 @@ private fun PhotoSourceDialog(
                 if (onSamsungGallery != null) {
                     PhotoSourceOption(
                         icon = Icons.Filled.Collections,
-                        title = "Samsung Gallery",
-                        description = "Open your phone's Gallery app directly",
+                        title = "Gallery",
+                        description = "Open your phone's gallery app directly",
                         onClick = onSamsungGallery,
                     )
                 }
@@ -716,247 +703,131 @@ private fun PhotoSourceOption(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProfileDrawer(
+private fun AccountSwitcherSheet(
     profiles: List<PlannerProfile>,
     activeProfileId: String?,
+    onDismiss: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onAddProfile: () -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
-    ModalDrawerSheet {
-        Row(
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 24.dp, end = 12.dp, top = 28.dp, bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
         ) {
-            Column {
-                Text(
-                    text = "Profiles",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "Local Instagram planners",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            IconButton(onClick = onAddProfile) {
-                Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = "Add profile",
-                )
-            }
-        }
-
-        if (profiles.isEmpty()) {
             Text(
-                text = "Add your first Instagram handle.",
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = "Switch accounts",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
             )
-        } else {
+            Spacer(modifier = Modifier.height(12.dp))
+
             profiles.forEach { profile ->
-                NavigationDrawerItem(
-                    label = {
-                        Column {
+                val isActive = profile.id == activeProfileId
+                Surface(
+                    onClick = { onSelectProfile(profile.id) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    shape = MaterialTheme.shapes.large,
+                    color = if (isActive) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ProfileAvatar(profile = profile, size = 44)
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 12.dp),
+                        ) {
+                            Text(profile.handle, fontWeight = FontWeight.SemiBold)
                             Text(
-                                text = profile.handle,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = "${profile.photos.size} grid • ${profile.archivedPhotos.size} archived",
+                                text = "${profile.photos.size} posts • ${profile.archivedPhotos.size} archived",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
-                    },
-                    selected = profile.id == activeProfileId,
-                    onClick = { onSelectProfile(profile.id) },
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
+                        if (isActive) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Current account",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
             }
-        }
 
-        Spacer(modifier = Modifier.weight(1f))
-        NavigationDrawerItem(
-            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-            label = { Text("Settings") },
-            selected = false,
-            onClick = onOpenSettings,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        )
+            Surface(
+                onClick = onAddProfile,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(42.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Filled.Add, contentDescription = null)
+                        }
+                    }
+                    Text(
+                        text = "Add account",
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+
+        }
     }
 }
 
 @Composable
 private fun Header(
     profile: PlannerProfile?,
-    selectionCount: Int,
-    canSwitchProfile: Boolean,
-    archiveCount: Int,
-    onOpenMenu: () -> Unit,
-    onOpenArchive: () -> Unit,
-    onEditProfile: () -> Unit,
-    onSwitchProfile: () -> Unit,
 ) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onOpenMenu) {
-            Icon(
-                imageVector = Icons.Filled.Menu,
-                contentDescription = "Open profiles",
-            )
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = if (profile != null) profile.handle else "Choose a profile",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = if (profile != null) "Instagram planner" else "Add an Instagram handle to begin",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        if (profile != null && selectionCount == 0) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(48.dp)) {
-                    IconButton(onClick = onOpenArchive) {
-                        Icon(
-                            imageVector = Icons.Filled.Archive,
-                            contentDescription = if (archiveCount == 0) {
-                                "Open archive"
-                            } else {
-                                "Open archive, $archiveCount posts"
-                            },
-                        )
-                    }
-                    if (archiveCount > 0) {
-                        Surface(
-                            modifier = Modifier.align(Alignment.TopEnd).size(18.dp),
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = if (archiveCount > 9) "9+" else archiveCount.toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                            }
-                        }
-                    }
-                }
-                ProfileAvatarSwitcher(
-                    profile = profile,
-                    canSwitchProfile = canSwitchProfile,
-                    onEditProfile = onEditProfile,
-                    onSwitchProfile = onSwitchProfile,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProfileAvatarSwitcher(
-    profile: PlannerProfile,
-    canSwitchProfile: Boolean,
-    onEditProfile: () -> Unit,
-    onSwitchProfile: () -> Unit,
-) {
-    var dragDistance by remember(profile.id) { mutableStateOf(0f) }
-    var isDragging by remember(profile.id) { mutableStateOf(false) }
-
-    Box(
-        modifier = Modifier
-            .size(52.dp)
-            .pointerInput(profile.id, canSwitchProfile) {
-                detectVerticalDragGestures(
-                    onDragStart = {
-                        if (canSwitchProfile) {
-                            isDragging = true
-                            dragDistance = 0f
-                        }
-                    },
-                    onVerticalDrag = { change, amount ->
-                        if (canSwitchProfile) {
-                            change.consume()
-                            dragDistance = (dragDistance + amount).coerceAtLeast(0f)
-                        }
-                    },
-                    onDragEnd = {
-                        val shouldSwitch = canSwitchProfile && dragDistance >= 64.dp.toPx()
-                        isDragging = false
-                        dragDistance = 0f
-                        if (shouldSwitch) {
-                            onSwitchProfile()
-                        }
-                    },
-                    onDragCancel = {
-                        isDragging = false
-                        dragDistance = 0f
-                    },
-                )
-            }
-            .clickable(onClick = onEditProfile),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (isDragging) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(48.dp),
-                strokeWidth = 3.dp,
-            )
-        }
-        if (profile.profilePicture != null) {
-            Image(
-                bitmap = profile.profilePicture,
-                contentDescription = "Edit or switch profile",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .offset { IntOffset(0, dragDistance.coerceAtMost(18f).roundToInt()) }
-                    .size(36.dp)
-                    .clip(CircleShape),
-            )
-        } else {
-            Surface(
-                modifier = Modifier
-                    .offset { IntOffset(0, dragDistance.coerceAtMost(18f).roundToInt()) }
-                    .size(36.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Filled.Person,
-                        contentDescription = "Edit or switch profile",
-                        modifier = Modifier.size(26.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-            }
-        }
+        Text(
+            text = profile?.handle ?: "Post Planner",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
 @Composable
 private fun ProfilePreview(
     profile: PlannerProfile,
-    onEditProfile: () -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     Surface(
-        onClick = onEditProfile,
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
     ) {
@@ -1008,6 +879,21 @@ private fun ProfilePreview(
             if (profile.website.isNotBlank()) {
                 Text(
                     text = profile.website,
+                    modifier = Modifier.clickable {
+                        val url = profile.website.trim()
+                        runCatching {
+                            uriHandler.openUri(
+                                if (
+                                    url.startsWith("http://", ignoreCase = true) ||
+                                    url.startsWith("https://", ignoreCase = true)
+                                ) {
+                                    url
+                                } else {
+                                    "https://$url"
+                                },
+                            )
+                        }
+                    },
                     color = MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -1677,96 +1563,11 @@ private fun AddProfileDialog(
 }
 
 @Composable
-private fun SettingsPage(
-    selectedTheme: AppThemeMode,
-    onThemeSelected: (AppThemeMode) -> Unit,
-    onBack: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
-            }
-            Column {
-                Text(
-                    text = "Settings",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "Customize your planner",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                text = "Appearance",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "Choose how the app looks on this device.",
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            AppThemeMode.entries.forEach { mode ->
-                Surface(
-                    onClick = { onThemeSelected(mode) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    color = if (selectedTheme == mode) {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surface
-                    },
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(
-                            selected = selectedTheme == mode,
-                            onClick = { onThemeSelected(mode) },
-                        )
-                        Text(
-                            text = mode.label,
-                            modifier = Modifier.padding(start = 8.dp),
-                        )
-                    }
-                }
-            }
-            Text(
-                text = "More planner settings can be added to this page later.",
-                modifier = Modifier.padding(top = 24.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EditProfileDialog(
+private fun EditProfilePage(
     profile: PlannerProfile,
-    onDismiss: () -> Unit,
+    selectedTheme: AppThemeMode,
+    onBack: () -> Unit,
+    onThemeSelected: (AppThemeMode) -> Unit,
     onPickProfilePicture: () -> Unit,
     onSave: (String, String, String, Long, Long) -> Unit,
     onDelete: () -> Unit,
@@ -1816,9 +1617,21 @@ private fun EditProfileDialog(
         return
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+            }
             Column {
                 Text("Edit profile")
                 Text(
@@ -1828,12 +1641,15 @@ private fun EditProfileDialog(
                     fontWeight = FontWeight.Normal,
                 )
             }
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+        }
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
@@ -1935,6 +1751,44 @@ private fun EditProfileDialog(
                     )
                 }
 
+                Text(
+                    text = "APPEARANCE",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        AppThemeMode.entries.forEach { mode ->
+                            Surface(
+                                onClick = { onThemeSelected(mode) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = MaterialTheme.shapes.medium,
+                                color = if (selectedTheme == mode) {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = selectedTheme == mode,
+                                        onClick = { onThemeSelected(mode) },
+                                    )
+                                    Text(mode.label, modifier = Modifier.padding(start = 8.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1971,27 +1825,38 @@ private fun EditProfileDialog(
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onSave(
-                        displayName.trim(),
-                        bio.trim(),
-                        website.trim(),
-                        followers.toLongOrNull() ?: 0,
-                        following.toLongOrNull() ?: 0,
-                    )
-                },
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Save")
+                TextButton(onClick = onBack) {
+                    Text("Cancel")
+                }
+                Button(
+                    onClick = {
+                        onSave(
+                            displayName.trim(),
+                            bio.trim(),
+                            website.trim(),
+                            followers.toLongOrNull() ?: 0,
+                            following.toLongOrNull() ?: 0,
+                        )
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
+                    Text("Save")
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
+        }
+    }
 }
 
 @Composable
@@ -2025,9 +1890,18 @@ private fun EmptyArchive(modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AddPhotoBar(
+private fun PlannerBottomBar(
+    activeProfile: PlannerProfile?,
+    archiveSelected: Boolean,
+    archiveCount: Int,
+    canSwitchProfile: Boolean,
+    onOpenArchive: () -> Unit,
     onAddPhotos: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onHoldProfile: () -> Unit,
+    onSwitchProfile: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -2037,17 +1911,119 @@ private fun AddPhotoBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 10.dp),
-            horizontalArrangement = Arrangement.Center,
+                .padding(horizontal = 28.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FloatingActionButton(
+            Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                IconButton(onClick = onOpenArchive, enabled = activeProfile != null) {
+                    Icon(
+                        imageVector = Icons.Filled.Archive,
+                        contentDescription = if (archiveCount == 0) {
+                            "Open archive"
+                        } else {
+                            "Open archive, $archiveCount posts"
+                        },
+                        tint = if (archiveSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                }
+                if (archiveCount > 0) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(18.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = if (archiveCount > 9) "9+" else archiveCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
                 onClick = onAddPhotos,
-                modifier = Modifier.clip(CircleShape),
+                modifier = Modifier.size(52.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shadowElevation = 4.dp,
             ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Add photos",
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .combinedClickable(
+                        onClick = onOpenProfile,
+                        onLongClickLabel = "Switch accounts",
+                        onLongClick = onHoldProfile,
+                        onDoubleClick = {
+                            if (canSwitchProfile) onSwitchProfile() else onOpenProfile()
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (activeProfile != null) {
+                    ProfileAvatar(profile = activeProfile, size = 38)
+                } else {
+                    Surface(
+                        modifier = Modifier.size(38.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Person,
+                                contentDescription = "Open profiles",
+                                modifier = Modifier.size(26.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatar(profile: PlannerProfile, size: Int) {
+    Surface(
+        modifier = Modifier.size(size.dp),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        if (profile.profilePicture != null) {
+            Image(
+                bitmap = profile.profilePicture,
+                contentDescription = profile.handle,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = "Add photos",
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = profile.handle,
+                    modifier = Modifier.size((size * 0.62f).dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
